@@ -51,10 +51,10 @@ def _image_align(image, reference, tolerance=None):
     shifts = np.empty(2)
     aligned_image = np.zeros(image.shape)
 
-    image = image - np.nanmean(image)
-    reference = reference - np.nanmean(reference)
+    img = image - np.nanmean(image)
+    ref = reference - np.nanmean(reference)
 
-    correlation_map = scisig.fftconvolve(image, reference[::-1, ::-1], mode='same')
+    correlation_map = scisig.fftconvolve(img, ref[::-1, ::-1], mode='same')
 
     y, x = np.unravel_index(np.argmax(correlation_map), correlation_map.shape)
     shifts[0] = (y0 - y - (y0 - y0_ref))
@@ -62,8 +62,8 @@ def _image_align(image, reference, tolerance=None):
 
     if tolerance is not None:
         if (shifts[0] > tolerance[0]) or (shifts[1] > tolerance[1]):
-            im_inv = 1./image
-            ref_inv = 1./reference
+            im_inv = 1./img
+            ref_inv = 1./ref
 
             corr_map_inv = scisig.fftconvolve(im_inv, ref_inv[::-1, ::-1], mode='same')
 
@@ -111,7 +111,7 @@ class Destretch:
         kernel_size -- kernel size currently in use (as the list is looped over)
     """
 
-    def __init__(self, destretch_target, kernel_sizes, reference_image,
+    def __init__(self, destretch_target, reference_image, kernel_sizes,
                  warp_vectors=None, ncores=2, return_vectors=False):
         """Initializing the destretch class WITHOUT a reference image.
         The reference image can be provided later, but does not have to be, as the class expects warp_params.
@@ -168,10 +168,11 @@ class Destretch:
                     self.warp_vectors = [self.doreg(rcps, tcps)]
                     self.destretch_target = scindi.map_coordinates(
                         self.destretch_target,
-                        self.warp_vectors,
+                        self.warp_vectors[0],
                         order=1,
                         mode='constant',
-                        prefilter=False
+                        prefilter=False,
+                        cval=np.nanmean(self.destretch_target)
                     )
             else:
                 self.warp_vectors = []
@@ -193,7 +194,8 @@ class Destretch:
                             wv,
                             order=1,
                             mode='constant',
-                            prefilter=False
+                            prefilter=False,
+                            cval=np.nanmean(self.destretch_target)
                         )
         else:
             if type(self.warp_vectors) is list:
@@ -209,7 +211,8 @@ class Destretch:
                         self.warp_vectors[i],
                         order=1,
                         mode='constant',
-                        prefilter=False
+                        prefilter=False,
+                        cval=np.nanmean(self.destretch_target)
                     )
             else:
                 if (self.kernel_size == 0) or (self.kernel[0] == 0):
@@ -223,7 +226,8 @@ class Destretch:
                     self.warp_vectors,
                     order=1,
                     mode='constant',
-                    prefilter=False
+                    prefilter=False,
+                    cval=np.nanmean(self.destretch_target)
                 )
         if self.return_vectors:
             return self.destretch_target, self.warp_vectors
@@ -276,13 +280,14 @@ class Destretch:
             hx = lx + self.wxy
             for j in range(0, int(cpx)):
                 rcps[0, j, i] = (lx + hx) / 2
-                rcps[1, j, i] = (ly + hx) / 2
+                rcps[1, j, i] = (ly + hy) / 2
                 lx += self.kernel_size
                 hx += self.kernel_size
             ly += self.kernel_size
             hy += self.kernel_size
         self.bound_size = (bx, by)
         self.control_size = (cpx, cpy)
+
         return rcps
 
     def cps(self, reference_control_points):
@@ -323,7 +328,6 @@ class Destretch:
              int(self.control_size[0]),
              int(self.control_size[1])),
             dtype=np.csingle)
-
         ly = int(self.bound_size[1])
         hy = ly + self.wxy
         for j in range(0, int(self.control_size[1])):
@@ -331,7 +335,7 @@ class Destretch:
             hx = lx + self.wxy
             for i in range(0, int(self.control_size[0])):
                 z = self.reference_image[lx:hx, ly:hy]
-                z = z - np.nanmean(z)
+                z = z - np.sum(z)/(self.wxy**2)
                 reference_window[:, :, i, j] = np.conjugate(np.fft.fft(z * wander_mask))
                 lx += self.kernel_size
                 hx += self.kernel_size
@@ -370,7 +374,6 @@ class Destretch:
 
         nnx = np.sum(tx * tx)
         nny = np.sum(ty * ty)
-        
         ly = int(self.bound_size[1])
         hy = ly + self.wxy
         for j in range(0, int(self.control_size[1])):
@@ -380,7 +383,6 @@ class Destretch:
                 ss = self.destretch_target[lx:hx, ly:hy]
                 k_tx = np.sum(ss*tx)/nnx
                 k_ty = np.sum(ss*ty)/nny
-
                 ss = (ss - (k_tx*tx + k_ty*ty))*wander_mask
                 cc = scindi.shift(
                     np.abs(
@@ -396,7 +398,7 @@ class Destretch:
                 # Following accounts for fractions of a pixel of shift:
                 if (mx_loc[0] * mx_loc[1] > 0) and (mx_loc[0] < (cc.shape[0] - 1)) and (mx_loc[1] < (cc.shape[1] - 1)):
                     denom = mx*2 - cc[mx_loc[0] - 1, mx_loc[1]] - cc[mx_loc[0] + 1, mx_loc[1]]
-                    xfra = (mx_loc[0] - 0.5) + (mx - cc[mx_loc[0], mx_loc[1] - 1])/denom
+                    xfra = (mx_loc[0] - 0.5) + (mx - cc[mx_loc[0]-1, mx_loc[1]])/denom
 
                     denom = mx * 2 - cc[mx_loc[0], mx_loc[1] - 1] - cc[mx_loc[0], mx_loc[1] + 1]
                     yfra = (mx_loc[1] - 0.5) + (mx - cc[mx_loc[0], mx_loc[1] - 1]) / denom
@@ -433,9 +435,7 @@ class Destretch:
         """
         kkx = rcps[0, 1, 0] - rcps[0, 0, 0]
         kky = rcps[1, 0, 1] - rcps[1, 0, 0]
-
         limit = (np.amax([kkx, kky]) * tolerance) ** 2
-
         difference = tcps - rcps
 
         bad_points = np.where((difference[0, :, :] ** 2 + difference[1, :, :] ** 2) > limit)
@@ -486,7 +486,7 @@ class Destretch:
 
         for i in range(nsubfields):
             if i == (nsubfields - 1):
-                tfc_list.append(tf_coords[i*size_of_subfield:, :])
+                tfc_list.append(tf_coords[i*size_of_subfield :, :])
             else:
                 tfc_list.append(tf_coords[i*size_of_subfield:(i+1)*size_of_subfield, :])
 
