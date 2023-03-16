@@ -147,6 +147,7 @@ class Destretch:
         self.wxy = None
         self.bound_size = None
         self.control_size = None
+        self.destretch_image = None
 
     def perform_destretch(self):
         """Perform image destretch. There are several cases to account for here:
@@ -166,13 +167,13 @@ class Destretch:
                     rcps = self.mkcps()
                     tcps = self.cps(rcps)
                     self.warp_vectors = [self.doreg(rcps, tcps)]
-                    self.destretch_target = scindi.map_coordinates(
+                    self.destretch_image = scindi.map_coordinates(
                         self.destretch_target,
                         self.warp_vectors[0],
                         order=1,
                         mode='constant',
                         prefilter=False,
-                        cval=np.nanmean(self.destretch_target)
+                        cval=0
                     )
             else:
                 self.warp_vectors = []
@@ -189,13 +190,13 @@ class Destretch:
                         tcps = self.cps(rcps)
                         wv = self.doreg(rcps, tcps)
                         self.warp_vectors.append(wv)
-                        self.destretch_target = scindi.map_coordinates(
+                        self.destretch_image = scindi.map_coordinates(
                             self.destretch_target,
                             wv,
                             order=1,
                             mode='constant',
                             prefilter=False,
-                            cval=np.nanmean(self.destretch_target)
+                            cval=0
                         )
         else:
             if type(self.warp_vectors) is list:
@@ -206,13 +207,13 @@ class Destretch:
                             self.reference_image,
                             tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
                         )
-                    self.destretch_target = scindi.map_coordinates(
+                    self.destretch_image = scindi.map_coordinates(
                         self.destretch_target,
                         self.warp_vectors[i],
                         order=1,
                         mode='constant',
                         prefilter=False,
-                        cval=np.nanmean(self.destretch_target)
+                        cval=0
                     )
             else:
                 if (self.kernel_size == 0) or (self.kernel[0] == 0):
@@ -221,18 +222,21 @@ class Destretch:
                         self.reference_image,
                         tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
                     )
-                self.destretch_target = scindi.map_coordinates(
+                self.destretch_image = scindi.map_coordinates(
                     self.destretch_target,
                     self.warp_vectors,
                     order=1,
                     mode='constant',
                     prefilter=False,
-                    cval=np.nanmean(self.destretch_target)
+                    cval=0
                 )
+
+        mask = self.destretch_image == 0.
+        self.destretch_image[mask] = self.destretch_target[mask]
         if self.return_vectors:
-            return self.destretch_target, self.warp_vectors
+            return self.destretch_image, self.warp_vectors
         else:
-            return self.destretch_target
+            return self.destretch_image
 
     def mkcps(self):
         """Compute reference image control points given the image size and the size of the desired kernel.
@@ -486,7 +490,7 @@ class Destretch:
 
         for i in range(nsubfields):
             if i == (nsubfields - 1):
-                tfc_list.append(tf_coords[i*size_of_subfield :, :])
+                tfc_list.append(tf_coords[i*size_of_subfield:, :])
             else:
                 tfc_list.append(tf_coords[i*size_of_subfield:(i+1)*size_of_subfield, :])
 
