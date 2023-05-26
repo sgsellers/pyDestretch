@@ -76,7 +76,7 @@ def _image_align(image, reference, tolerance=None):
 
     scindi.shift(image, shifts, output=aligned_image, mode='constant', cval=0.0)
 
-    return aligned_image
+    return aligned_image, shifts
 
 
 def _warp_coords(coordinate, transform_object):
@@ -100,19 +100,22 @@ def _warp_coords(coordinate, transform_object):
 
 class Destretch:
     """Omnibus class for image destretching. Copied or adapted in large part from Sunspot's image destretch IDL tools
-    from the 90's. See original reg.pro for details of individual functions. Now parallelized.
+    from the 90's. See original reg.pro for details of individual functions.
+    Can be parallelized when using affine transformation.
 
     Attributes:
     -----------
-        reference_image -- image used as a reference for calculating destretch vectors
-        destretch_target -- image to warp
-        target_size -- size of target image
-        kernel -- list of kernel sizes
-        kernel_size -- kernel size currently in use (as the list is looped over)
+        reference_image (array-like) -- image used as a reference for calculating destretch vectors
+        destretch_target (array-like) -- image to warp
+        kernel_sizes (list of int or int) -- kernel size(s) to use in destretch. List is done sequentially.
+            A leading 0 indicates that the image should be fine-aligned.
+        warp_vectors (list of ndarray) -- list of destretch coordinates, for destretching one image relative to another
+        ncores (int) -- Used in affine transform destretch for parallelization
+        return_vectors (bool) -- If True, returns the list of destretch coordinates
     """
 
     def __init__(self, destretch_target, reference_image, kernel_sizes,
-                 warp_vectors=None, ncores=2, return_vectors=False):
+                 warp_vectors=None, ncores=1, return_vectors=False):
         """Initializing the destretch class WITHOUT a reference image.
         The reference image can be provided later, but does not have to be, as the class expects warp_params.
 
@@ -149,17 +152,18 @@ class Destretch:
         self.control_size = None
         self.destretch_image = None
 
-    def perform_destretch(self):
+    def perform_destretch_affine(self):
         """Perform image destretch. There are several cases to account for here:
         1.  Reference image and either single kernel size or list thereof are provided.
             In this case, perform iterative destretch as normal.
         2.  Warp vectors are provided.
             In this case, perform just the coordinate remapping using scipy
         """
+         
         if self.warp_vectors is None:
             if self.kernel_size is not None:
                 if self.kernel_size == 0:
-                    self.destretch_target = _image_align(
+                    self.destretch_target, shifts = _image_align(
                         self.destretch_target,
                         self.reference_image,
                         tolerance=(self.target_size[0]/4., self.target_size[1]/4.))
@@ -179,7 +183,7 @@ class Destretch:
                 self.warp_vectors = []
                 for i in range(len(self.kernel)):
                     if self.kernel[i] == 0:
-                        self.destretch_target = _image_align(
+                        self.destretch_target, shifts = _image_align(
                             self.destretch_target,
                             self.reference_image,
                             tolerance=(self.target_size[0]/4., self.target_size[1]/4.)
@@ -202,7 +206,98 @@ class Destretch:
             if type(self.warp_vectors) is list:
                 for i in range(len(self.warp_vectors)):
                     if (self.kernel_size == 0) or (self.kernel[0] == 0):
-                        self.destretch_target = _image_align(
+                        self.destretch_target, shifts = _image_align(
+                            self.destretch_target,
+                            self.reference_image,
+                            tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
+                        )
+                    self.destretch_image = scindi.map_coordinates(
+                        self.destretch_target,
+                        self.warp_vectors[i],
+                        order=1,
+                        mode='constant',
+                        prefilter=False,
+                        cval=0
+                    )
+            else:
+                if (self.kernel_size == 0) or (self.kernel[0] == 0):
+                    self.destretch_target = _image_align(
+                        self.destretch_target,
+                        self.reference_image,
+                        tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
+                    )
+                self.destretch_image = scindi.map_coordinates(
+                    self.destretch_target,
+                    self.warp_vectors,
+                    order=1,
+                    mode='constant',
+                    prefilter=False,
+                    cval=0
+                )
+
+        mask = self.destretch_image == 0.
+        self.destretch_image[mask] = self.destretch_target[mask]
+        if self.return_vectors:
+            return self.destretch_image, self.warp_vectors
+        else:
+            return self.destretch_image
+
+    def perform_destretch(self):
+        """Perform image b-spline driven destretch. There are several cases to account for here:
+        1.  Reference image and either single kernel size or list thereof are provided.
+            In this case, perform iterative destretch as normal.
+        2.  Warp vectors are provided.
+            In this case, perform just the coordinate remapping using scipy
+        """
+        if self.warp_vectors is None:
+            if self.kernel_size is not None:
+                if self.kernel_size == 0:
+                    self.destretch_target, shifts = _image_align(
+                        self.destretch_target,
+                        self.reference_image,
+                        tolerance=(self.target_size[0]/4., self.target_size[1]/4.))
+                    self.warp_vectors = [shifts]
+                else:
+                    rcps = self.mkcps()
+                    tcps = self.cps(rcps)
+                    self.warp_vectors = [self.contruct_bspline(rcps, tcps)]
+                    self.destretch_image = scindi.map_coordinates(
+                        self.destretch_target,
+                        self.warp_vectors[0],
+                        order=1,
+                        mode='constant',
+                        prefilter=False,
+                        cval=0
+                    )
+            else:
+                self.warp_vectors = []
+                for i in range(len(self.kernel)):
+                    if self.kernel[i] == 0:
+                        self.destretch_target, shifts = _image_align(
+                            self.destretch_target,
+                            self.reference_image,
+                            tolerance=(self.target_size[0]/4., self.target_size[1]/4.)
+                        )
+                        self.warp_vectors.append(shifts)
+                    else:
+                        self.kernel_size = self.kernel[i]
+                        rcps = self.mkcps()
+                        tcps = self.cps(rcps)
+                        wv = self.contruct_bspline(rcps, tcps)
+                        self.warp_vectors.append(wv)
+                        self.destretch_image = scindi.map_coordinates(
+                            self.destretch_target,
+                            wv,
+                            order=1,
+                            mode='constant',
+                            prefilter=False,
+                            cval=0
+                        )
+        else:
+            if type(self.warp_vectors) is list:
+                for i in range(len(self.warp_vectors)):
+                    if (self.kernel_size == 0) or (self.kernel[0] == 0):
+                        self.destretch_target, shifts = _image_align(
                             self.destretch_target,
                             self.reference_image,
                             tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
@@ -509,3 +604,156 @@ class Destretch:
         warp_array[0, :, :] = tfc[1, :, :]
 
         return warp_array
+
+    def contruct_bspline(self, reference_control_points, target_control_points):
+        """From the IDL reg.pro, construct a b-spline for scene destretch.
+        This was originally adapted from Foley & Van Dam by Phil Wiborg and Thomas Rimmele.
+
+        Args:
+            reference_control_points (array-like): Numpy array of shape (2, x, y) containing control points
+                of the reference image.
+            target_control_points (array-like): Numpy array of shape (2, x, y) containing the
+                corresponding control points of the target image
+
+        Returns:
+            destretch_coordinates (array-like): Numpy array with the same shape as the target image containing
+                the destretch coordinates
+        """
+        def extend(rcps, tcps, pad=12):
+            """Extend reference and target displacements to cover entire scene
+
+            Args:
+                rcps (array-like): Reference control points
+                tcps (array-like): Reference control points
+                pad (int): Value to pad the array by. Likely, this should be related to the kernel size
+
+            Returns:
+                ercps (array-like): Expanded reference control points
+                etcps (array-like): Expanded target control points
+            """
+            ns = tcps.shape[0] + pad
+            nt = tcps.shape[1] + pad
+
+            ercps = np.zeros((ns, nt))
+            rdiffs = rcps[1, 0] - rcps[0, 0]
+            rzeroes = rcps[0, 0] - 3*rdiffs
+
+            zx = np.arange(ns)*rdiffs + rzeroes
+
+            for i in range(nt):
+                ercps[:, i] = zx
+
+            etcps = np.zeros((ns, nt))
+            etcps[int(pad/2):-int(pad/2), int(pad/2):-int(pad/2)] = tcps - rcps
+
+            x = etcps[:, int(pad/2)]
+            for i in range(int(pad/2)):
+                etcps[:, i] = x
+            x = etcps[:, -int((pad / 2) + 1)]
+            for i in range(int(pad / 2)):
+                etcps[:, -(i+1)] = x
+            etcps = etcps.T
+            x = etcps[:, int(pad / 2)]
+            for i in range(int(pad / 2)):
+                etcps[:, i] = x
+            x = etcps[:, -int((pad / 2) + 1)]
+            for i in range(int(pad / 2)):
+                etcps[:, -(i + 1)] = x
+            etcps = etcps.T
+
+            etcps += ercps
+
+            return ercps, etcps
+
+        def patch(compx, compy, s, t):
+            """Fills in the section of B-spline
+
+            Args:
+                compx: x-coord patch after matrix ops
+                compy: y-coord patch after matric ops
+                s: sequence in y
+                t: sequence in x
+
+            Returns:
+                dstr_patch: minute patch of destretch coordinates
+
+            """
+            dstr_patch = np.zeros((2, len(s), len(t)))
+            ss = np.array(
+                [s**3, s**2, s, np.ones(len(s))]
+            ).T
+            tt = np.array(
+                [t**3, t**2, t, np.ones(len(t))]
+            )
+            dstr_patch[0, :, :] = np.matmul(ss, np.matmul(compx, tt))
+            dstr_patch[1, :, :] = np.matmul(ss, np.matmul(compy, tt))
+            return dstr_patch
+
+        # First step, exaggerate the drift of the target control points.
+        # This is apparently a kludge to increase the magnitude of error
+        # since the curve generally doesn't pass through the tie points.
+        # Essentially increases the displacement of every target control point by a factor of 1.1
+        target_control_points = 1.1*(target_control_points - reference_control_points) + reference_control_points
+
+        # ds and dt are distances in x/y between reference control points, as they're an evenly spaced grid
+        ds = reference_control_points[0, 1, 0] - reference_control_points[0, 0, 0]
+        dt = reference_control_points[1, 0, 1] - reference_control_points[1, 0, 0]
+
+        # Expand reference and target control points to cover whole image
+        # The IDL script used a pad of 6. I thought initially this was easily alterable
+        # I'm no longer so certain. It seems to be baked into the way we calculate our splines
+        # Regardless, I've got too many other things to do without dealing with this.
+        ercps_x, etcps_x = extend(reference_control_points[0, :, :],
+                                  target_control_points[0, :, :],
+                                  pad=6)
+        ercps_y, etcps_y = extend(reference_control_points[1, :, :].T,
+                                  target_control_points[1, :, :].T,
+                                  pad=6)
+        ercps = np.zeros((2, ercps_x.shape[0], ercps_x.shape[1]))
+        ercps[0, :, :] = ercps_x
+        ercps[1, :, :] = ercps_y.T
+
+        etcps = np.zeros((2, etcps_x.shape[0], etcps_x.shape[1]))
+        etcps[0, :, :] = etcps_x
+        etcps[1, :, :] = etcps_y.T
+        # Basis matrices for uniform B-splines
+        Ms = np.array(
+            [
+                [-1, 3, -3, 1],
+                [3, -6, 0, 4],
+                [-3, 3, 3, 1],
+                [1, 0, 0, 0]
+            ]
+        ) / 6.
+        MsTrans = Ms.T
+
+        destretch_coords = np.zeros(
+            (
+                2,
+                self.destretch_target.shape[0],
+                self.destretch_target.shape[1]
+            )
+        )
+        for v in range(target_control_points.shape[2]+int(6/2)):
+            t0 = ercps[1, 1, v+1]
+            tn = ercps[1, 1, v+2]
+            # print(t0, tn)
+            if (tn > 0) and (t0 < destretch_coords.shape[2]-1):
+                t0 = np.nanmax(np.array([t0, 0]))
+                tn = np.nanmin(np.array([tn, destretch_coords.shape[2]-1]))
+                t = np.arange((tn-t0))/dt + (t0-ercps[1, 1, v+1])/dt
+                for u in range(target_control_points.shape[1]+int(6/2)):
+                    s0 = ercps[0, u+1, v+1]
+                    sn = ercps[0, u+2, v+1]
+                    if (sn > 0) and (s0 < destretch_coords.shape[1]-1):
+                        s0 = np.nanmax([s0, 0])
+                        sn = np.nanmin([sn, destretch_coords.shape[1]-1])
+                        s = np.arange((sn-s0))/ds + (s0-ercps[0, u+1, v+1])/ds
+                        compx = np.matmul(MsTrans, np.matmul(etcps[0, u:u+4, v:v+4], Ms)).reshape((4, 4))
+                        compy = np.matmul(MsTrans,
+                            np.matmul(
+                                etcps[1, u:u+4, v:v+4],
+                                Ms
+                            )).reshape((4, 4))
+                        destretch_coords[:, int(s0):int(sn), int(t0):int(tn)] = patch(compx, compy, s, t)
+        return destretch_coords
