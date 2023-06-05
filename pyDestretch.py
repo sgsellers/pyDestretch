@@ -74,7 +74,7 @@ def _image_align(image, reference, tolerance=None):
             if (shifts[0] > tolerance[0]) or (shifts[1] > tolerance[1]):
                 raise ToleranceException(tolerance)
 
-    scindi.shift(image, shifts, output=aligned_image, mode='constant', cval=0.0)
+    scindi.shift(image, shifts, output=aligned_image, mode='constant', cval=image[0, 0])
 
     return aligned_image, shifts
 
@@ -296,35 +296,58 @@ class Destretch:
         else:
             if type(self.warp_vectors) is list:
                 for i in range(len(self.warp_vectors)):
-                    if (self.kernel_size == 0) or (self.kernel[0] == 0):
+                    if len(self.warp_vectors[i].shape) == 1:
+                        self.destretch_target = scindi.shift(
+                            self.destretch_target,
+                            self.warp_vectors[i],
+                            mode='constant',
+                            cval=self.destretch_target[0, 0]
+                        )
+                    elif (len(self.warp_vectors[i].shape) != 1) & (self.kernel == 0):
                         self.destretch_target, shifts = _image_align(
                             self.destretch_target,
                             self.reference_image,
                             tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
                         )
-                    self.destretch_image = scindi.map_coordinates(
-                        self.destretch_target,
-                        self.warp_vectors[i],
-                        order=1,
-                        mode='constant',
-                        prefilter=False,
-                        cval=0
-                    )
+                        self.destretch_image = scindi.map_coordinates(
+                            self.destretch_target,
+                            self.warp_vectors[i],
+                            order=1,
+                            mode='constant',
+                            prefilter=False,
+                            cval=0
+                        )
+                    else:
+                        self.destretch_image = scindi.map_coordinates(
+                            self.destretch_target,
+                            self.warp_vectors[i],
+                            order=1,
+                            mode='constant',
+                            prefilter=False,
+                            cval=0
+                        )
             else:
-                if (self.kernel_size == 0) or (self.kernel[0] == 0):
+                if len(self.warp_vectors.shape) == 1:
+                    self.destretch_target = scindi.shift(
+                        self.destretch_target,
+                        self.warp_vectors,
+                        mode='constant',
+                        cval=self.destretch_target[0, 0]
+                    )
+                else:
                     self.destretch_target = _image_align(
                         self.destretch_target,
                         self.reference_image,
                         tolerance=(self.target_size[0]/4., self.target_size[0]/4.)
                     )
-                self.destretch_image = scindi.map_coordinates(
-                    self.destretch_target,
-                    self.warp_vectors,
-                    order=1,
-                    mode='constant',
-                    prefilter=False,
-                    cval=0
-                )
+                    self.destretch_image = scindi.map_coordinates(
+                        self.destretch_target,
+                        self.warp_vectors,
+                        order=1,
+                        mode='constant',
+                        prefilter=False,
+                        cval=0
+                    )
 
         mask = self.destretch_image == 0.
         self.destretch_image[mask] = self.destretch_target[mask]
