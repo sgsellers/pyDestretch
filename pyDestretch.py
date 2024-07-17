@@ -77,7 +77,7 @@ def _image_align(image, reference, tolerance=None):
 
 class Destretch:
     def __init__(self, destretch_target, reference_image, kernel_sizes,
-                 warp_vectors=None, return_vectors=False):
+                 warp_vectors=None, return_vectors=False, repair_tolerance=0.3):
         """Initializing the destretch class WITHOUT a reference image.
         The reference image can be provided later, but does not have to be, as the class expects warp_params.
 
@@ -115,6 +115,7 @@ class Destretch:
         self.reference_control_points = []
         self.target_control_points = []
         self.shifts = None
+        self.repair_tolerance = repair_tolerance
         return
 
     """Omnibus class for image destretching. Copied or adapted in large part from Sunspot's image destretch IDL tools
@@ -305,7 +306,7 @@ class Destretch:
         wander_mask = np.ones((self.wxy, self.wxy))
         win = self.doref(wander_mask)
         ans = self.cploc(win, wander_mask)
-        target_control_points = self.repair(reference_control_points, ans)
+        target_control_points = self.repair(reference_control_points, ans, self.repair_tolerance)
         return target_control_points
 
     def doref(self, wander_mask):
