@@ -2,6 +2,7 @@ import numpy as np
 import scipy.ndimage as scindi
 import scipy.signal as scisig
 
+
 class ToleranceException(Exception):
     """Exception raised for solutions outside the allowed tolerances.
 
@@ -101,7 +102,7 @@ class Destretch:
         self.destretch_target = destretch_target
         self.kernel = kernel_sizes
         self.target_size = self.destretch_target.shape
-        if (type(self.kernel) == int) or (type(self.kernel) == float):
+        if (type(self.kernel) is int) or (type(self.kernel) is float):
             self.kernel_size = self.kernel
         else:
             self.kernel_size = None
@@ -126,7 +127,8 @@ class Destretch:
         destretch_target (array-like) -- image to warp
         kernel_sizes (list of int or int) -- kernel size(s) to use in destretch. List is done sequentially.
             A leading 0 indicates that the image should be fine-aligned.
-        warp_vectors (list of ndarray) -- list of destretch control points, for destretching one image relative to another
+        warp_vectors (list of ndarray) -- list of destretch control points, 
+            for destretching one image relative to another
         ncores (int) -- Used in affine transform destretch for parallelization
         return_vectors (bool) -- If True, returns the list of destretch coordinates
     """
@@ -223,7 +225,7 @@ class Destretch:
         mask = self.destretch_image == 0.
         self.destretch_image[mask] = self.destretch_target[mask]
         if self.return_vectors:
-            if self.shifts:
+            if self.shifts is not None:
                 self.warp_vectors = [self.shifts] + self.reference_control_points + self.target_control_points
             else:
                 self.warp_vectors = self.reference_control_points + self.target_control_points
