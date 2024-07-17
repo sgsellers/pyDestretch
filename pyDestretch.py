@@ -110,7 +110,11 @@ class Destretch:
         self.wxy = None
         self.bound_size = None
         self.control_size = None
-        self.destretch_image = None
+        self.destretch_image = self.destretch_target
+        self.reference_control_points = []
+        self.target_control_points = []
+        self.shifts = None
+        return
 
     """Omnibus class for image destretching. Copied or adapted in large part from Sunspot's image destretch IDL tools
     from the 90's. See original reg.pro for details of individual functions.
@@ -122,7 +126,7 @@ class Destretch:
         destretch_target (array-like) -- image to warp
         kernel_sizes (list of int or int) -- kernel size(s) to use in destretch. List is done sequentially.
             A leading 0 indicates that the image should be fine-aligned.
-        warp_vectors (list of ndarray) -- list of destretch coordinates, for destretching one image relative to another
+        warp_vectors (list of ndarray) -- list of destretch control points, for destretching one image relative to another
         ncores (int) -- Used in affine transform destretch for parallelization
         return_vectors (bool) -- If True, returns the list of destretch coordinates
     """
@@ -137,96 +141,92 @@ class Destretch:
         if self.warp_vectors is None:
             if self.kernel_size is not None:
                 if self.kernel_size == 0:
-                    self.destretch_target, shifts = _image_align(
-                        self.destretch_target,
+                    self.destretch_image, shifts = _image_align(
+                        self.destretch_image,
                         self.reference_image,
                         tolerance=(self.target_size[0]/4., self.target_size[1]/4.))
-                    # To save the vectors, the shifts need to have the same size as everything else.
-                    # So we create a dummy array, and fill it with the shifts
-                    shifts_arr = np.zeros((2, self.target_size[0], self.target_size[1]))
-                    shifts_arr[0, :, :] += shifts[0]
-                    shifts_arr[1, :, :] += shifts[1]
-                    self.warp_vectors = [shifts_arr]
+                    self.shifts = shifts
                 else:
                     rcps = self.mkcps()
                     tcps = self.cps(rcps)
-                    self.warp_vectors = [self.contruct_bspline(rcps, tcps)]
+                    self.reference_control_points.append(rcps)
+                    self.target_control_points.append(tcps)
+                    wv = self.contruct_bspline(rcps, tcps)
                     self.destretch_image = scindi.map_coordinates(
-                        self.destretch_target,
-                        self.warp_vectors[0],
+                        self.destretch_image,
+                        wv,
                         order=1,
                         mode='constant',
                         prefilter=False,
                         cval=self.destretch_target[0, 0]
                     )
             else:
-                self.warp_vectors = []
                 for i in range(len(self.kernel)):
                     if self.kernel[i] == 0:
-                        self.destretch_target, shifts = _image_align(
-                            self.destretch_target,
+                        self.destretch_image, shifts = _image_align(
+                            self.destretch_image,
                             self.reference_image,
                             tolerance=(self.target_size[0]/4., self.target_size[1]/4.)
                         )
-                        shifts_arr = np.zeros((2, self.target_size[0], self.target_size[1]))
-                        shifts_arr[0, :, :] += shifts[0]
-                        shifts_arr[1, :, :] += shifts[1]
-                        self.warp_vectors.append(shifts_arr)
+                        self.shifts = shifts
                     else:
                         self.kernel_size = self.kernel[i]
                         rcps = self.mkcps()
                         tcps = self.cps(rcps)
+                        self.reference_control_points.append(rcps)
+                        self.target_control_points.append(tcps)
                         wv = self.contruct_bspline(rcps, tcps)
-                        self.warp_vectors.append(wv)
                         self.destretch_image = scindi.map_coordinates(
-                            self.destretch_target,
+                            self.destretch_image,
                             wv,
                             order=1,
                             mode='constant',
                             prefilter=False,
                             cval=self.destretch_target[0, 0]
                         )
+        # Rewrote self.warp_vectors to be a list of numpy arrays,
+        # corresponding to two even-length sequential lists of reference then target control points
+        # With a leading shifts if necessary. Only way to get a len(self.warp_vector) = 1 is shifts only
         else:
-            if len(self.warp_vectors.shape) > 3:
-                for i in range(self.warp_vectors.shape[0]):
-                    if self.kernel[i] == 0:
-                        self.destretch_target = scindi.shift(
-                            self.destretch_target,
-                            self.warp_vectors[i][:, 0, 0],
-                            mode='constant',
-                            cval=self.destretch_target[0, 0]
-                        )
-                    else:
-                        self.destretch_image = scindi.map_coordinates(
-                            self.destretch_target,
-                            self.warp_vectors[i],
-                            order=1,
-                            mode='constant',
-                            prefilter=False,
-                            cval=self.destretch_target[0, 0]
-                        )
-            else:
+            if len(self.warp_vectors) == 1:
                 # Edge case where there's a destretch array that corresponds only to a bulk shift
-                if self.kernel == 0:
-                    self.destretch_target = scindi.shift(
-                        self.destretch_target,
-                        self.warp_vectors[:, 0, 0],
-                        mode='constant',
-                        cval=self.destretch_target[0, 0]
-                    )
-                else:
-                    self.destretch_image = scindi.map_coordinates(
-                        self.destretch_target,
-                        self.warp_vectors,
-                        order=1,
-                        mode='constant',
-                        prefilter=False,
-                        cval=self.destretch_target[0, 0]
-                    )
+                self.destretch_image = scindi.shift(
+                    self.destretch_image,
+                    self.warp_vectors[0],
+                    mode='constant',
+                    cval=self.destretch_target[0, 0]
+                )
+            elif len(self.warp_vectors) % 2 == 0:
+                # Case where no bulk shifts were performed
+                self.reference_control_points = self.warp_vectors[:int(len(self.warp_vectors)/2)]
+                self.target_control_points = self.warp_vectors[int(len(self.warp_vectors)/2):]
+            elif len(self.warp_vectors) % 2 != 0:
+                self.destretch_image = scindi.shift(
+                    self.destretch_image,
+                    self.warp_vectors[0],
+                    mode='constant',
+                    cval=self.destretch_target[0, 0]
+                )
+                self.reference_control_points = self.warp_vectors[1:int(len(self.warp_vectors)/2) + 1]
+                self.target_control_points = self.warp_vectors[int(len(self.warp_vectors)/2) + 1:]
+            for i in range(len(self.reference_control_points)):
+                wv = self.contruct_bspline(self.reference_control_points[i], self.target_control_points[i])
+                self.destretch_image = scindi.map_coordinates(
+                    self.destretch_image,
+                    wv,
+                    order=1,
+                    mode='constant',
+                    prefilter=False,
+                    cval=self.destretch_target[0, 0]
+                )
 
         mask = self.destretch_image == 0.
         self.destretch_image[mask] = self.destretch_target[mask]
         if self.return_vectors:
+            if self.shifts:
+                self.warp_vectors = [self.shifts] + self.reference_control_points + self.target_control_points
+            else:
+                self.warp_vectors = self.reference_control_points + self.target_control_points
             return self.destretch_image, self.warp_vectors
         else:
             return self.destretch_image
@@ -377,7 +377,7 @@ class Destretch:
             lx = int(self.bound_size[0])
             hx = lx + self.wxy
             for i in range(0, int(self.control_size[0])):
-                ss = self.destretch_target[lx:hx, ly:hy]
+                ss = self.destretch_image[lx:hx, ly:hy]
                 k_tx = np.sum(ss*tx)/nnx
                 k_ty = np.sum(ss*ty)/nny
                 ss = (ss - (k_tx*tx + k_ty*ty))*wander_mask
